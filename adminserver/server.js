@@ -3,8 +3,8 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const multer = require('multer');
-const fs = require('fs');
 const path = require('path');
+const fs = require('fs');
 const {
   S3Client,
   PutObjectCommand,
@@ -18,15 +18,12 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ✅ Serve uploaded PDFs from local disk
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
-
-// ✅ Connect to MongoDB
+// ✅ MongoDB
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('✅ Admin DB Connected'))
   .catch(console.error);
 
-// ✅ AWS S3 Client Setup
+// ✅ AWS S3 Setup
 const s3 = new S3Client({
   region: process.env.AWS_REGION,
   credentials: {
@@ -34,31 +31,15 @@ const s3 = new S3Client({
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
   }
 });
-
 const bucketName = process.env.S3_BUCKET;
 
-// ✅ Upload to memory (used for answer uploads)
+// ✅ Use memory storage for both questions and answers
 const upload = multer({ storage: multer.memoryStorage() });
 
-// ✅ Local disk storage for assignment questions
-const assignmentStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const { batch, module, title } = req.query;
-    if (!batch || !module || !title) {
-      return cb(new Error('Missing batch/module/title in query-string'), null);
-    }
-    const dir = path.join(__dirname, 'uploads', batch, module, title, 'assignment');
-    fs.mkdirSync(dir, { recursive: true });
-    cb(null, dir);
-  },
-  filename: (_req, _file, cb) => cb(null, 'question.pdf')
-});
-const assignmentUpload = multer({ storage: assignmentStorage });
-
-// =====================================
-// 📤 Upload Assignment (local + S3)
-// =====================================
-app.post('/upload-assignment', assignmentUpload.single('file'), async (req, res) => {
+// ==============================================
+// 📤 Upload Assignment Question to S3
+// ==============================================
+app.post('/upload-assignment', upload.single('file'), async (req, res) => {
   const { batch, module, title } = req.query;
 
   if (!req.file || !batch || !module || !title) {
@@ -66,33 +47,39 @@ app.post('/upload-assignment', assignmentUpload.single('file'), async (req, res)
   }
 
   const key = `${batch}/${module}/${title}/assignment/question.pdf`;
-  const localPath = req.file.path;
 
   try {
-    const fileBuffer = fs.readFileSync(localPath);
-
     await s3.send(new PutObjectCommand({
       Bucket: bucketName,
       Key: key,
-      Body: fileBuffer,
+      Body: req.file.buffer,
       ContentType: 'application/pdf'
     }));
 
-    const s3Url = `https://${bucketName}.s3.${process.env.AWS_REGION}.amazonaws.com/${encodeURIComponent(key)}`;
+    const s3Url = `https://${bucketName}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
     res.json({
-      message: 'Assignment uploaded locally and to S3 successfully',
-      localPath,
+      message: 'Assignment question uploaded to S3 successfully',
       s3Url
     });
   } catch (err) {
     console.error('❌ Upload failed:', err);
-    res.status(500).json({ error: 'Failed to upload to S3 after saving locally' });
+    res.status(500).json({ error: 'Failed to upload question to S3' });
   }
 });
 
-// ======================================
-// 📤 Upload Student Answer to S3
-// ======================================
+// ==============================================
+// 🔗 Get Assignment Question Link from S3
+// ==============================================
+app.get('/assignment-question/:batch/:module/:title', (req, res) => {
+  const { batch, module, title } = req.params;
+  const key = `${batch}/${module}/${title}/assignment/question.pdf`;
+  const s3Url = `https://${bucketName}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
+  res.json({ url: s3Url });
+});
+
+// ==============================================
+// ✅ Answer Upload (KEEPING AS IS)
+// ==============================================
 app.post('/notes/upload/:batch/:module/:title/:student', upload.single('file'), async (req, res) => {
   const { batch, module, title, student } = req.params;
 
@@ -108,7 +95,7 @@ app.post('/notes/upload/:batch/:module/:title/:student', upload.single('file'), 
       ContentType: 'application/pdf'
     }));
 
-    const url = `https://${bucketName}.s3.${process.env.AWS_REGION}.amazonaws.com/${encodeURIComponent(key)}`;
+    const url = `https://${bucketName}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
     res.json({ message: 'Answer uploaded', url });
   } catch (err) {
     console.error(err);
@@ -116,9 +103,9 @@ app.post('/notes/upload/:batch/:module/:title/:student', upload.single('file'), 
   }
 });
 
-// ======================================
-// 📄 Evaluate Pending Answers from S3
-// ======================================
+// ==============================================
+// ✅ Evaluate Unmarked Answers (KEEPING AS IS)
+// ==============================================
 app.get('/evaluate/:batch/:module/:title', async (req, res) => {
   const { batch, module, title } = req.params;
   const prefix = `${batch}/${module}/${title}/assignment/`;
@@ -158,9 +145,9 @@ app.get('/evaluate/:batch/:module/:title', async (req, res) => {
   }
 });
 
-// ======================================
-// ✅ Save Mark for Student Answer
-// ======================================
+// ==============================================
+// ✅ Save Marks (KEEPING AS IS)
+// ==============================================
 app.post('/mark', async (req, res) => {
   const { batch, module, notetitle, student, mark, type } = req.body;
   try {
@@ -172,13 +159,13 @@ app.post('/mark', async (req, res) => {
   }
 });
 
-// =======================
-// 📚 Notes CRUD Endpoint
-// =======================
+// ==============================================
+// ✅ Notes CRUD
+// ==============================================
 app.use('/notes', noteRoutes);
 
-// =======================
-// 🚀 Start Server
-// =======================
+// ==============================================
+// ✅ Start Server
+// ==============================================
 const PORT = process.env.PORT || 5003;
 app.listen(PORT, () => console.log(`🚀 Admin server running on port ${PORT}`));
